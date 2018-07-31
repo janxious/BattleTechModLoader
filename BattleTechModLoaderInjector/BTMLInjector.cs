@@ -34,7 +34,9 @@ namespace BattleTechModLoader
             var returnCode = 0;
             try
             {
-                var injected = IsInjected(gameDllPath, HOOK_TYPE, HOOK_METHOD, injectDllPath, INJECT_TYPE, INJECT_METHOD);
+                WriteLine($"Checking if {GAME_DLL_FILE_NAME} is already injected ...");
+                MethodDefinition methodDefinition = IsInjected(gameDllPath);
+                var injected = methodDefinition != null;
                 if (args.Contains("/restore"))
                 {
                     if (injected)
@@ -50,7 +52,14 @@ namespace BattleTechModLoader
                 {
                     if (injected)
                     {
-                        WriteLine($"{GAME_DLL_FILE_NAME} already injected with {INJECT_TYPE}.{INJECT_METHOD}.");
+                        if (methodDefinition.FullName.Contains(HOOK_TYPE) && methodDefinition.FullName.Contains(HOOK_METHOD))
+                        {
+                            WriteLine($"{GAME_DLL_FILE_NAME} already injected with {INJECT_TYPE}.{INJECT_METHOD}.");
+                        }
+                        else
+                        {
+                            WriteLine($"ERROR: {GAME_DLL_FILE_NAME} already injected with an older BattleTechModLoader Injector.  Please revert the file and re-run injector!");
+                        }
                     }
                     else
                     {
@@ -90,8 +99,7 @@ namespace BattleTechModLoader
             WriteLine($"{Path.GetFileName(backupFilePath)} restored to {Path.GetFileName(filePath)}");
         }
 
-        private static void Inject(string hookFilePath, string hookType, string hookMethod, string injectFilePath,
-            string injectType, string injectMethod)
+        private static void Inject(string hookFilePath, string hookType, string hookMethod, string injectFilePath, string injectType, string injectMethod)
         {
             WriteLine($"Injecting {Path.GetFileName(hookFilePath)} with {injectType}.{injectMethod} at {hookType}.{hookMethod}");
 
@@ -108,7 +116,7 @@ namespace BattleTechModLoader
                     var nestedIterator = game.GetType(hookType).NestedTypes.First(x => x.Name.Contains(hookMethod) && x.Name.Contains("Iterator"));
                     hookedMethod = nestedIterator.Methods.First(x => x.Name.Equals("MoveNext"));
                 }
-                
+
 
                 // As of BattleTech v1.1 the Start() iterator method of BattleTech.Main has this at the end
                 /*
@@ -123,7 +131,7 @@ namespace BattleTechModLoader
 
                 // We want to inject after the PrepareSerializer call -- so search for that call in the CIL
                 int targetInstruction = -1;
-                for (int i = 0; i < hookedMethod.Body.Instructions.Count; i++) 
+                for (int i = 0; i < hookedMethod.Body.Instructions.Count; i++)
                 {
                     var instruction = hookedMethod.Body.Instructions[i];
                     if (instruction.OpCode.Code.Equals(Code.Call) && instruction.OpCode.OperandType.Equals(OperandType.InlineMethod))
@@ -135,7 +143,7 @@ namespace BattleTechModLoader
                         }
                     }
                 }
-                
+
                 if (targetInstruction != -1)
                 {
                     hookedMethod.Body.GetILProcessor().InsertAfter(hookedMethod.Body.Instructions[targetInstruction],
@@ -152,29 +160,53 @@ namespace BattleTechModLoader
             }
         }
 
-        // ReSharper disable once UnusedParameter.Local // injectFilePath
-        private static bool IsInjected(string hookFilePath, string hookType, string hookMethod, string injectFilePath,
-            string injectType, string injectMethod)
+        private static MethodDefinition IsInjected(string gameDllPath)
         {
-            using (var game = ModuleDefinition.ReadModule(hookFilePath))
+            using (ModuleDefinition gameModule = ModuleDefinition.ReadModule(gameDllPath, new ReaderParameters { ReadWrite = true }))
             {
-                // get the methods that we're hooking and injecting
-                var hookedMethod = game.GetType(hookType).Methods.First(x => x.Name == hookMethod);
-
-                // check if we've been injected
-                foreach (var instruction in hookedMethod.Body.Instructions)
+                foreach (TypeDefinition type in gameModule.Types)
                 {
-                    if (instruction.OpCode.Equals(OpCodes.Call)
-                        && instruction.Operand.ToString().Equals(
-                            $"System.Void {injectType}::{injectMethod}()"))
+                    // Assume we only ever inject in BattleTech classes
+                    if (type.FullName.StartsWith("BattleTech"))
                     {
+                        // Standard methods
+                        foreach (var methodDefinition in type.Methods)
+                        {
+                            if (CheckMethodForCall(methodDefinition))
+                            {
+                                return methodDefinition;
+                            }
+                        }
+
+                        // Also have to check in places like IEnumerator generated methods (Nested)
+                        foreach (var nestedType in type.NestedTypes)
+                        {
+                            foreach (var methodDefinition in nestedType.Methods)
+                            {
+                                if (CheckMethodForCall(methodDefinition))
+                                {
+                                    return methodDefinition;
+                                }
+                            }
+                        }
+                    }
+                }
+                return null;
+            }
+        }
+
+        private static bool CheckMethodForCall(MethodDefinition methodDefinition)
+        {
+            if (methodDefinition.Body != null)
+            {
+                foreach (var instruction in methodDefinition.Body.Instructions)
+                {
+                    if (instruction.OpCode.Equals(OpCodes.Call) && instruction.Operand.ToString().Equals($"System.Void {INJECT_TYPE}::{INJECT_METHOD}()")) {
                         return true;
                     }
                 }
             }
-
             return false;
         }
     }
 }
- 
